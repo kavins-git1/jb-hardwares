@@ -402,18 +402,25 @@ function payWithGPay() {
 function confirmGPayment() {
     let amountInPaise = 0;
     let description = "";
+    let itemsOrdered = [];
     
     if (activeCheckoutItem === 'cart') {
         let total = 0;
+        let itemNames = [];
         cart.forEach(id => {
             let p = products.find(pr => pr.id.toString() === id);
-            if(p) total += parsePrice(p.price);
+            if(p) {
+                total += parsePrice(p.price);
+                itemsOrdered.push({ id: p.id, name: p.name, price: p.price });
+                itemNames.push(p.name);
+            }
         });
         amountInPaise = total * 100;
-        description = "Cart Checkout";
+        description = "Cart Checkout: " + itemNames.join(", ");
     } else if (activeCheckoutItem) {
         amountInPaise = parsePrice(activeCheckoutItem.price) * 100;
         description = activeCheckoutItem.name;
+        itemsOrdered.push({ id: activeCheckoutItem.id, name: activeCheckoutItem.name, price: activeCheckoutItem.price });
     }
 
     let paymentId = "GPAY_" + Math.random().toString(36).substr(2, 9).toUpperCase();
@@ -431,56 +438,65 @@ function confirmGPayment() {
 
     if (!db || !currentUser) return;
 
-    let orderRef = db.collection("orders").doc();
-    
-    orderRef.set({
-        uid: currentUser.uid,
-        payment_id: paymentId,
-        description: description,
-        amount: amountInPaise / 100,
-        status: "Pending Verification",
-        date: new Date().toISOString()
-    }).then(() => {
-        syncUserData('lastOrdered', description);
+    db.collection("users").doc(currentUser.uid).get().then(userDoc => {
+        let userData = userDoc.exists ? userDoc.data() : {};
+        let orderRef = db.collection("orders").doc();
         
-        let unsubscribe = orderRef.onSnapshot((doc) => {
-            let data = doc.data();
-            if (data && (data.status === "Payment Successful" || data.status === "Approved" || data.status === "Success")) {
-                unsubscribe(); // Stop listening
-                document.getElementById("paymentStatusSection").innerHTML = `
-                    <div style="text-align: center; padding: 20px;">
-                        <i class="fa-solid fa-check-circle" style="font-size: 50px; color: #4CAF50; margin-bottom: 15px;"></i>
-                        <h3 style="color: #4CAF50;">Order Success!</h3>
-                        <p style="font-size: 14px; color: #666; margin-top: 10px;">Your payment has been successfully verified.</p>
-                        <button class="btn primary-btn full-width" style="margin-top:20px;" onclick="closeModal()">Done</button>
-                    </div>
-                `;
+        orderRef.set({
+            uid: currentUser.uid,
+            payment_id: paymentId,
+            description: description,
+            items: itemsOrdered,
+            amount: amountInPaise / 100,
+            status: "Pending Verification",
+            date: new Date().toISOString(),
+            customer_name: userData.name || currentUser.displayName || "N/A",
+            customer_phone: userData.phone || currentUser.phoneNumber || "N/A",
+            customer_address: userData.address || "N/A"
+        }).then(() => {
+            syncUserData('lastOrdered', description);
+            
+            let unsubscribe = orderRef.onSnapshot((doc) => {
+                let data = doc.data();
+                if (data && (data.status === "Payment Successful" || data.status === "Approved" || data.status === "Success")) {
+                    unsubscribe(); // Stop listening
+                    document.getElementById("paymentStatusSection").innerHTML = `
+                        <div style="text-align: center; padding: 20px;">
+                            <i class="fa-solid fa-check-circle" style="font-size: 50px; color: #4CAF50; margin-bottom: 15px;"></i>
+                            <h3 style="color: #4CAF50;">Order Success!</h3>
+                            <p style="font-size: 14px; color: #666; margin-top: 10px;">Your payment has been successfully verified.</p>
+                            <button class="btn primary-btn full-width" style="margin-top:20px;" onclick="closeModal()">Done</button>
+                        </div>
+                    `;
 
-                if (activeCheckoutItem === 'cart') {
-                    cart = [];
-                    syncUserData('cart', cart);
-                    updateCounts();
+                    if (activeCheckoutItem === 'cart') {
+                        cart = [];
+                        syncUserData('cart', cart);
+                        updateCounts();
+                    }
+                } else if (data && (data.status === "Rejected" || data.status === "Failed")) {
+                    unsubscribe();
+                    document.getElementById("paymentStatusSection").innerHTML = `
+                        <div style="text-align: center; padding: 20px;">
+                            <i class="fa-solid fa-times-circle" style="font-size: 50px; color: red; margin-bottom: 15px;"></i>
+                            <h3 style="color: red;">Payment Failed</h3>
+                            <p style="font-size: 14px; color: #666; margin-top: 10px;">We couldn't verify your payment. Please try again or contact support.</p>
+                            <button class="btn secondary-btn full-width" style="margin-top:20px;" onclick="closeModal()">Close</button>
+                        </div>
+                    `;
                 }
-            } else if (data && (data.status === "Rejected" || data.status === "Failed")) {
-                unsubscribe();
-                document.getElementById("paymentStatusSection").innerHTML = `
-                    <div style="text-align: center; padding: 20px;">
-                        <i class="fa-solid fa-times-circle" style="font-size: 50px; color: red; margin-bottom: 15px;"></i>
-                        <h3 style="color: red;">Payment Failed</h3>
-                        <p style="font-size: 14px; color: #666; margin-top: 10px;">We couldn't verify your payment. Please try again or contact support.</p>
-                        <button class="btn secondary-btn full-width" style="margin-top:20px;" onclick="closeModal()">Close</button>
-                    </div>
-                `;
-            }
+            });
+        }).catch(e => {
+            console.error("Error setting order doc:", e);
+            document.getElementById("paymentStatusSection").innerHTML = `
+                <div style="text-align: center; padding: 20px;">
+                    <p style="color: red;">Failed to create order. Please check your connection and try again.</p>
+                    <button class="btn primary-btn full-width" onclick="closeModal()">Close</button>
+                </div>
+            `;
         });
     }).catch(e => {
-        console.error("Error setting order doc:", e);
-        document.getElementById("paymentStatusSection").innerHTML = `
-            <div style="text-align: center; padding: 20px;">
-                <p style="color: red;">Failed to create order. Please check your connection and try again.</p>
-                <button class="btn primary-btn full-width" onclick="closeModal()">Close</button>
-            </div>
-        `;
+        console.error("Error fetching user data:", e);
     });
 }
 
